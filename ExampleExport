@@ -1,0 +1,627 @@
+package com.x2dev.reports.nh.nashua;
+
+ 
+
+import com.follett.fsc.core.k12.beans.BeanManager.PersistenceKey;
+
+import static com.follett.fsc.core.k12.business.ModelProperty.PATH_DELIMITER;
+
+import static com.follett.fsc.core.k12.beans.SystemPreferenceDefinition.STUDENT_ACTIVE_CODE;
+
+ 
+
+import java.util.*;
+
+ 
+
+import org.apache.ojb.broker.query.*;
+
+ 
+
+import com.x2dev.sis.model.beans.*;
+
+import com.follett.fsc.core.k12.beans.*;
+
+import com.x2dev.sis.model.business.*;
+
+import com.follett.fsc.core.k12.business.*;
+
+import com.follett.fsc.core.framework.persistence.SubQuery;
+
+ 
+
+import com.follett.fsc.core.k12.tools.ReferenceDescriptionLookup;
+
+import com.follett.fsc.core.k12.tools.exports.*;
+
+import com.x2dev.utils.*;
+
+import com.x2dev.utils.converters.*;
+
+import com.x2dev.utils.X2BaseException;
+
+import com.follett.fsc.core.k12.web.UserDataContainer;
+
+ 
+
+/* Brian Landolt */
+
+public class LearnExport extends ExportJavaSource
+
+{
+
+    /* Grid constants */
+
+                private static final String FIELD_FIRST_NAME = "firstName";
+
+                private static final String FIELD_LAST_NAME = "lastName";
+
+                private static final String FIELD_EMAIL = "email";
+
+                private static final String FIELD_SCHOOL_NAME = "schoolName";
+
+                private static final String FIELD_GRADE_LEVEL = "gradeLevel";
+
+               
+
+                private static final String SPLIT_REGEX = "[,\\.]";
+
+               
+
+    private List<String> m_columns = (List) null;
+
+   
+
+    @Override
+
+    protected void initialize()
+
+    {
+
+        m_columns = new ArrayList<String>(5);
+
+        m_columns.add(FIELD_FIRST_NAME);
+
+        m_columns.add(FIELD_LAST_NAME);
+
+        m_columns.add(FIELD_EMAIL);
+
+        m_columns.add(FIELD_SCHOOL_NAME);
+
+        m_columns.add(FIELD_GRADE_LEVEL);
+
+       
+
+        setUseValueWrappers(true);
+
+        setIncludeHeaderRow(true);
+
+    }
+
+   
+
+                /*
+
+                 * Current context OID; this will help with querying MasterSchedules for the current context
+
+                * (basically this is just the current year)
+
+                */
+
+                protected String contextOID;
+
+               
+
+                @Override
+
+                protected void saveState(UserDataContainer userData) throws X2BaseException
+
+                {
+
+                                super.saveState(userData);
+
+                                this.contextOID = userData.getCurrentContextOid();
+
+                }
+
+ 
+
+    @Override
+
+    protected DataGrid gatherData() throws Exception
+
+    {
+
+        DataGrid grid = new DataGrid(m_columns.size());
+
+       
+
+        /*
+
+         * The documentation for Learn states that:
+
+         *
+
+         * "Multiple grade levels can be included in the grade level column, however the teacher information
+
+         * would have to be listed with each grade level on separate rows"
+
+         *
+
+         * But, if you look in the DataDictionary, teachers do not actually have a GradeLevel attached to them.
+
+         * Rather, it is the SchoolCourse table that has a GradeLevel. SchoolCourse is used to create
+
+         * MasterSchedules (this is a one-to-many relationship). SchoolCourse has a GradeLevel and
+
+         * MasterSchedule has a primary staff (this is considered the teacher).
+
+         *
+
+         * With this, we are going to query all SchoolCourses and iterate through each instance of MasterSchedule
+
+         */
+
+       
+
+        /* First, create a Criteria object */
+
+        Criteria criteria = new Criteria();
+
+       
+
+        /*
+
+         * Now, we are going to query all of the Courses for the current context (basically this is just the courses
+
+         * that exist for the current year). We are going to use the relationship between these tables to determine
+
+         * if the course context matches the current context.
+
+         */
+
+                                criteria.addEqualTo(SisStaff.REL_MASTER_SCHEDULE + "." + MasterSchedule.REL_SCHOOL_COURSE + "." + SchoolCourse.REL_COURSE + "." + Course.COL_DISTRICT_CONTEXT_OID, contextOID);
+
+       
+
+        /* Next, we are going to query the SchoolCourse table using the Criteria we just built */
+
+        QueryByCriteria query = new QueryByCriteria(SchoolCourse.class, criteria);
+
+       
+
+        /* Create an iterator using the query */
+
+        QueryIterator iterator = getBroker().getIteratorByQuery(query);
+
+       
+
+        /* (I do not want duplicate entries, so I am going to create a HashSet) */
+
+        Set<StaffEntry> set = new HashSet<>();
+
+       
+
+        /* Iterate through the iterator */
+
+        try
+
+        {
+
+            while ( iterator.hasNext() )
+
+            {
+
+               /* Get the next element from the collection and cast it to the SchoolCourse type */
+
+               SchoolCourse schoolCourse = (SchoolCourse) iterator.next();
+
+              
+
+               /* Null check, sometimes the GradeLevel can be null (nesting a try/catch in this iterator could also work) */
+
+               if ( schoolCourse.getGradeLevel() != null )
+
+               {
+
+                               /* SchoolCourse have multiple MasterSchedules, here we iterate through them */
+
+                               for ( MasterSchedule masterSchedule : schoolCourse.getMasterSchedules() )
+
+                                               {
+
+                                               /* More null checks */
+
+                                               if ( masterSchedule.getPrimaryStaff() != null && masterSchedule.getPrimaryStaff().getSchool() != null )
+
+                                               {
+
+                                                               /* Here we get the primary staff (which is a SisStaff type) from the MasterSchedule, then we get that Person */
+
+                                                              SisPerson person = masterSchedule.getPrimaryStaff().getPerson();
+
+                                                             
+
+                                                              /*
+
+                                                               * We then get the GradeLevel from the SchoolCourse. It looks something like "K,1,2,3,4,5".
+
+                                                               * This is a String, and we want each individual grade. So, here we can use the split method
+
+                                                               * to create an Array of each individual grade and then just iterate through that list
+
+                                                               */
+
+                                                             
+
+                                                              String gradeLevel = schoolCourse.getGradeLevel();
+
+                                                             
+
+                                                              /*
+
+                                                               * Grade Level can also be a number such as 39. This value can be translated
+
+                                                               * in the Data Dictionary. Go to Admin |> Reference |> Grade Levels |> Codes
+
+                                                               * The description for 39 translates to "Grade 6 to Grade 8 - Middle School"
+
+                                                               */
+
+                                                              switch( gradeLevel )
+
+                                                              {
+
+                                                                              case "31":
+
+                                                                              {
+
+                                                                                              gradeLevel = "9,10,11,12";
+
+                                                                                              break;
+
+                                                                              }
+
+                                                                              case "35":
+
+                                                                              {
+
+                                                                                              gradeLevel = "K,1,2,3,4";
+
+                                                                                              break;
+
+                                                                              }
+
+                                                                              case "38":
+
+                                                                              {
+
+                                                                                              gradeLevel = "K,1,2,3,4,5";
+
+                                                                                              break;
+
+                                                                              }
+
+                                                                              case "39":
+
+                                                                              {
+
+                                                                                              gradeLevel = "6,7,8";
+
+                                                                                              break;
+
+                                                                              }
+
+                                                                              case "42":
+
+                                                                              {
+
+                                                                                              gradeLevel = "K,1,2,3,4,5,6,7,8,9,10,11,12";
+
+                                                                                              break;
+
+                                                                              }
+
+                                                                              case "13":
+
+                                                                              {
+
+                                                                                              gradeLevel = "PK";
+
+                                                                                              break;
+
+                                                                              }
+
+                                                                              case "PK1":
+
+                                                                              {
+
+                                                                                              gradeLevel = "PK";
+
+                                                                                              break;
+
+                                                                              }
+
+                                                                              case "PK2":
+
+                                                                              {
+
+                                                                                              gradeLevel = "PK";
+
+                                                                                              break;
+
+                                                                              }
+
+                                                                              case "PK3":
+
+                                                                              {
+
+                                                                                              gradeLevel = "PK";
+
+                                                                                              break;
+
+                                                                              }
+
+                                                                              case "PK4":
+
+                                                                              {
+
+                                                                                              gradeLevel = "PK";
+
+                                                                                              break;
+
+                                                                              }
+
+                                                              }
+
+                                                             
+
+                                                              for ( String grade : gradeLevel.split(SPLIT_REGEX) )
+
+                                                              {
+
+                                                                              /* Add the StaffEntry instance we created to the HashMap */
+
+                                                                              set.add(new StaffEntry(person.getFirstName(), person.getLastName(), person.getEmail01(), masterSchedule.getPrimaryStaff().getSchool().getName(), this.parseGradeLevel(grade)));
+
+                                                              }
+
+                                               }
+
+                                               }
+
+               }
+
+            }
+
+        }
+
+        finally
+
+        {
+
+               /* Close the iterator to avoid memory leaks! */
+
+            iterator.close();
+
+        }
+
+       
+
+        /* After we are done, iterate through that HashMap that we created earlier and start adding it to the grid */
+
+        for ( StaffEntry staffEntry : set )
+
+        {
+
+               grid.append();
+
+            grid.set(FIELD_FIRST_NAME, staffEntry.firstName);
+
+            grid.set(FIELD_LAST_NAME, staffEntry.lastName);
+
+            grid.set(FIELD_EMAIL, staffEntry.email);
+
+            grid.set(FIELD_SCHOOL_NAME, staffEntry.schoolName);
+
+                                grid.set(FIELD_GRADE_LEVEL, staffEntry.gradeLevel);
+
+        }
+
+       
+
+        grid.beforeTop();
+
+        return grid;
+
+    }
+
+   
+
+    private String parseGradeLevel(String s)
+
+    {
+
+                try
+
+                {
+
+                                return String.valueOf(Integer.parseInt(s));
+
+                }
+
+                catch ( Exception e )
+
+                {
+
+                                return s;
+
+                }
+
+    }
+
+   
+
+    /*
+
+     * StaffEntry class, I create instances of StaffEntry and add them to the HashMap because I do not want duplicate
+
+     * entries; where both email and grade level are equal
+
+     * */
+
+    public class StaffEntry
+
+    {
+
+                private final String firstName;
+
+                private final String lastName;
+
+                private final String email;
+
+                private final String schoolName;
+
+                private final String gradeLevel;
+
+               
+
+                public StaffEntry(String firstName, String lastName, String email, String schoolName, String gradeLevel)
+
+                {
+
+                                this.firstName = firstName;
+
+                                this.lastName = lastName;
+
+                                this.email = email;
+
+                                this.schoolName = schoolName;
+
+                                this.gradeLevel = gradeLevel;
+
+                }
+
+               
+
+                @Override
+
+                public boolean equals(Object obj)
+
+                {
+
+                                if ( this == obj )
+
+                                {
+
+                                                return true;
+
+                                }
+
+                               
+
+                                if ( obj == null || this.getClass() != obj.getClass() )
+
+                                {
+
+                                                return false;
+
+                                }
+
+                               
+
+                                StaffEntry staffEntry = (StaffEntry)obj;
+
+                               
+
+                                return Objects.equals(this.email, staffEntry.email) && Objects.equals(this.gradeLevel, staffEntry.gradeLevel);
+
+                }
+
+               
+
+                @Override
+
+                public int hashCode()
+
+                {
+
+                                return Objects.hash(this.email, this.gradeLevel);
+
+                }
+
+    }
+
+ 
+
+    /**
+
+     * @see com.x2dev.sis.tools.exports.ExportJavaSource#getColumnNames()
+
+     */
+
+    @Override
+
+    protected List getColumnNames()
+
+    {
+
+        return m_columns;
+
+    }
+
+ 
+
+    /**
+
+     * @see com.x2dev.sis.tools.exports.ExportJavaSource#getColumnUserNames()
+
+     */
+
+    @Override
+
+    protected List getColumnUserNames()
+
+    {
+
+        return m_columns;
+
+    }
+
+ 
+
+    /**
+
+     * @see com.x2dev.sis.tools.exports.ExportJavaSource#getComment()
+
+     */
+
+    @Override
+
+    protected String getComment()
+
+    {
+
+        return null;
+
+    }
+
+ 
+
+    /**
+
+     * @see com.x2dev.sis.tools.exports.ExportJavaSource#getHeader()
+
+     */
+
+    @Override
+
+    protected String getHeader()
+
+    {
+
+        return null;
+
+    }
+
+}
